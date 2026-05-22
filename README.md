@@ -46,6 +46,8 @@
 
 각 이벤트는 실무에서 필요한 최소한의 필드로 구성하되, 추후 분석에 필요한 메타데이터를 충분히 포함하도록 설계했습니다.
 
+> **참고**: 현재는 랜덤 이벤트를 생성하여 파이프라인 동작을 검증합니다. 실제 프로덕션 환경에서는 웹/앱에서 발생하는 실시간 사용자 이벤트를 수집하게 되며, 이를 통해 의미 있는 사용자 여정 분석과 비즈니스 인사이트를 도출할 수 있습니다.
+
 ### Step 2: PostgreSQL 선택 이유
 
 **PostgreSQL을 선택한 이유:**
@@ -266,6 +268,35 @@ eventlog/
 2. **conversion_funnel.png** - 전환 퍼널 (바 차트)
 3. **daily_revenue.png** - 일별 매출 (바 차트)
 4. **error_severity.png** - 에러 심각도 분포 (파이 차트)
+
+## AWS 아키텍처 설계 (선택 과제)
+
+### 아키텍처 다이어그램
+![AWS Architecture](./aws-architecture.png)
+
+### 선택한 AWS 서비스별 역할
+
+#### 애플리케이션 계층
+**EC2 (t3.small)**: Docker Compose로 Spring Boot 애플리케이션을 실행합니다. 과거 프로젝트에서 EC2 사용 경험이 있어 익숙하며, SSH로 직접 접속하여 디버깅과 로그 확인이 가능합니다. 현재 Docker 구성을 그대로 사용할 수 있어 마이그레이션이 간단합니다.
+
+#### 데이터베이스 계층
+**RDS PostgreSQL (db.t3.micro, Single-AZ)**: 이벤트 로그를 저장하는 관리형 데이터베이스입니다. 현재 PostgreSQL 16을 사용 중이라 코드 수정 없이 바로 연결할 수 있습니다. 자동 백업(7일 보관)으로 데이터 유실을 방지하며, EC2에서 직접 PostgreSQL을 운영하는 것보다 패치와 관리가 편리합니다.
+
+#### 스토리지 계층
+**Amazon S3**: JFreeChart로 생성한 차트 이미지(PNG)를 저장합니다. EC2 인스턴스는 재시작 시 로컬 파일이 사라질 수 있으므로 S3에 영구 저장합니다. Public Access를 허용하면 브라우저에서 `https://bucket-name.s3.amazonaws.com/charts/event_type_distribution.png` 형태로 바로 확인할 수 있습니다.
+
+#### 네트워크 계층
+**VPC와 Security Group**: EC2는 Public Subnet에, RDS는 Private Subnet에 배치하여 외부에서 DB로 직접 접근할 수 없도록 차단합니다. Security Group으로 EC2에서 RDS의 5432 포트로만 접근을 허용하여 최소 권한 원칙을 적용합니다.
+
+#### 운영 계층
+**EventBridge**: 매일 자정에 이벤트 생성 작업을 자동 실행하는 스케줄러입니다. Cron 표현식(`cron(0 0 * * ? *)`)으로 스케줄을 설정하며, Lambda 함수를 통해 EC2 내부 스크립트를 트리거할 수 있습니다.
+
+**CloudWatch**: EC2와 RDS의 로그와 메트릭을 수집합니다. CPU 사용률이 80% 이상이거나 디스크가 부족할 때 SNS로 알람을 받을 수 있으며, CloudWatch Agent를 설치하면 Spring Boot 애플리케이션 로그도 실시간으로 확인할 수 있습니다.
+
+### 아키텍처 설계에서 고민한 부분
+
+#### 로드 밸런서(ALB) 필요성
+처음에는 **Application Load Balancer**를 고려했습니다. ALB는 여러 EC2 인스턴스로 트래픽을 분산하고 HTTPS 인증서를 관리하며, Auto Scaling과 연동하여 부하에 따라 인스턴스를 자동 증감할 수 있습니다. 하지만 이번 과제는 하루 한 번 100개 이벤트를 생성하는 배치 작업이고, 외부 트래픽이 거의 없으며, 단일 EC2 인스턴스로도 충분히 처리 가능합니다. ALB는 시간당 $0.0225 + 데이터 전송 비용이 추가되어 과제 규모 대비 과한 스펙이라 판단하여 제외했습니다. 만약 실시간 API를 제공하거나 높은 가용성이 필요하다면 ALB와 Auto Scaling을 추가하는 것이 적합합니다.
 
 ## 개발
 
